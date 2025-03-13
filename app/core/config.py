@@ -1,7 +1,11 @@
 from pathlib import Path
 import os
 from typing import Dict, Any
-from pydantic_settings import BaseSettings
+
+try:
+    from pydantic_settings import BaseSettings
+except ImportError:
+    from pydantic import BaseSettings  # Fallback for older versions
 
 class Settings(BaseSettings):
     # Application Settings
