@@ -5,17 +5,20 @@ import signal
 import logging
 import uvicorn
 import threading
-from pathlib import Path
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 import gradio as gr
 import requests
 import subprocess
 import platform
 import psutil
 import json
-from typing import Dict, Optional, Any
+import re
+import zipfile
+import tarfile
+from pathlib import Path
+from typing import Dict, Optional, Any, List, Tuple
 from datetime import datetime
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 # Basic Configuration
 class Settings:
@@ -26,6 +29,8 @@ class Settings:
     DEBUG = bool(os.getenv("DEBUG", False))
     STEAM_DOWNLOAD_PATH = os.getenv("STEAM_DOWNLOAD_PATH", "/data/downloads")
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+    MAX_CONCURRENT_DOWNLOADS = 1
+    MAX_HISTORY_SIZE = 50
     
     @classmethod
     def create_directories(cls):
@@ -50,15 +55,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Initialize FastAPI
-app = FastAPI(title=Settings.APP_NAME, version=Settings.VERSION)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Custom Exceptions
+class SteamDownloaderError(Exception):
+    """Base exception for Steam Downloader application."""
+    pass
+
+class SteamCMDError(SteamDownloaderError):
+    """Raised when there's an error with SteamCMD."""
+    pass
 
 # SteamCMD Management
 class SteamCMD:
@@ -87,7 +91,6 @@ class SteamCMD:
             return False
     
     def _download_and_extract_zip(self, url):
-        import zipfile
         response = requests.get(url)
         zip_path = "steamcmd/steamcmd.zip"
         with open(zip_path, 'wb') as f:
@@ -97,7 +100,6 @@ class SteamCMD:
         os.remove(zip_path)
     
     def _download_and_extract_tar(self, url):
-        import tarfile
         response = requests.get(url)
         tar_path = "steamcmd/steamcmd.tar.gz"
         with open(tar_path, 'wb') as f:
@@ -107,36 +109,20 @@ class SteamCMD:
         os.remove(tar_path)
         os.chmod("steamcmd/steamcmd.sh", 0o755)
 
-# Download Manager
-class DownloadManager:
-    def __init__(self):
-        self.active_downloads = {}
-        self.download_queue = []
-        self.download_history = []
-        self.steam_cmd = SteamCMD()
-    
-    def start_download(self, game_input: str, anonymous: bool = True,
-                      username: Optional[str] = None, 
-                      password: Optional[str] = None) -> Dict[str, Any]:
-        """Start a game download."""
+    def download_game(self, appid: str, download_dir: str, 
+                     username: Optional[str] = None,
+                     password: Optional[str] = None,
+                     guard_code: Optional[str] = None) -> Tuple[bool, str]:
+        """Download a game using SteamCMD."""
         try:
-            # Extract AppID
-            appid = self._parse_game_input(game_input)
-            if not appid:
-                return {"success": False, "message": "Invalid game input"}
+            cmd = [str(self.path)]
             
-            # Create download directory
-            download_dir = os.path.join(Settings.STEAM_DOWNLOAD_PATH, f"app_{appid}")
-            os.makedirs(download_dir, exist_ok=True)
-            
-            # Prepare command
-            cmd = [str(self.steam_cmd.path)]
-            if anonymous:
-                cmd.extend(["+login", "anonymous"])
-            else:
-                if not username or not password:
-                    return {"success": False, "message": "Username and password required"}
+            if username and password:
                 cmd.extend(["+login", username, password])
+                if guard_code:
+                    cmd.append(guard_code)
+            else:
+                cmd.extend(["+login", "anonymous"])
             
             cmd.extend([
                 "+force_install_dir", download_dir,
@@ -145,43 +131,157 @@ class DownloadManager:
                 "+quit"
             ])
             
-            # Start download process
-            process = subprocess.Popen(
+            process = subprocess.run(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 text=True
             )
             
-            download_id = f"dl_{datetime.now().timestamp()}_{appid}"
+            if process.returncode == 0:
+                return True, "Download completed successfully"
+            return False, f"Download failed: {process.stderr}"
+            
+        except Exception as e:
+            return False, f"Error: {str(e)}"
+
+# Game Information Service
+class GameInfoService:
+    def __init__(self):
+        self.api_url = "https://store.steampowered.com/api"
+        self.cache_dir = "cache"
+        os.makedirs(self.cache_dir, exist_ok=True)
+    
+    def get_game_info(self, game_input: str) -> Dict[str, Any]:
+        """Get game information from Steam API."""
+        try:
+            appid = self.parse_game_input(game_input)
+            if not appid:
+                return {"error": "Invalid game input"}
+            
+            # Check cache
+            cache_file = os.path.join(self.cache_dir, f"game_{appid}.json")
+            if os.path.exists(cache_file):
+                with open(cache_file, 'r') as f:
+                    return json.load(f)
+            
+            # Fetch from API
+            url = f"{self.api_url}/appdetails"
+            params = {"appids": appid}
+            response = requests.get(url, params=params, timeout=10)
+            data = response.json()
+            
+            if data[appid]["success"]:
+                game_info = data[appid]["data"]
+                # Cache the result
+                with open(cache_file, 'w') as f:
+                    json.dump(game_info, f)
+                return game_info
+            
+            return {"error": "Game not found"}
+            
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def parse_game_input(self, game_input: str) -> Optional[str]:
+        """Extract AppID from game input."""
+        if game_input.isdigit():
+            return game_input
+        
+        match = re.search(r'app/(\d+)', game_input)
+        if match:
+            return match.group(1)
+        
+        return None
+
+# Download Manager
+class DownloadManager:
+    def __init__(self):
+        self.active_downloads: Dict[str, Dict] = {}
+        self.download_queue: List[Dict] = []
+        self.download_history: List[Dict] = []
+        self.steam_cmd = SteamCMD()
+        self.game_info = GameInfoService()
+    
+    def start_download(self, game_input: str, anonymous: bool = True,
+                      username: Optional[str] = None, 
+                      password: Optional[str] = None,
+                      guard_code: Optional[str] = None) -> Dict[str, Any]:
+        """Start a game download."""
+        try:
+            # Get game info
+            game_info = self.game_info.get_game_info(game_input)
+            if "error" in game_info:
+                return {"success": False, "message": game_info["error"]}
+            
+            appid = str(game_info["steam_appid"])
+            game_name = game_info["name"]
+            
+            # Create download directory
+            download_dir = os.path.join(Settings.STEAM_DOWNLOAD_PATH, f"app_{appid}")
+            os.makedirs(download_dir, exist_ok=True)
+            
+            # Create download entry
+            download_id = f"dl_{int(datetime.now().timestamp())}_{appid}"
+            
+            # Start download in a separate thread
+            thread = threading.Thread(
+                target=self._download_thread,
+                args=(download_id, appid, download_dir, username, password, guard_code, game_name)
+            )
+            thread.daemon = True
+            
             self.active_downloads[download_id] = {
-                "process": process,
                 "appid": appid,
-                "status": "Downloading",
+                "name": game_name,
+                "status": "Starting",
+                "progress": 0,
                 "start_time": datetime.now()
             }
+            
+            thread.start()
             
             return {
                 "success": True,
                 "download_id": download_id,
-                "message": "Download started"
+                "message": f"Download started for {game_name}"
             }
             
         except Exception as e:
             logger.error(f"Download error: {e}")
             return {"success": False, "message": str(e)}
     
-    def _parse_game_input(self, game_input: str) -> Optional[str]:
-        """Extract AppID from game input."""
-        if game_input.isdigit():
-            return game_input
-        
-        import re
-        match = re.search(r'app/(\d+)', game_input)
-        if match:
-            return match.group(1)
-        
-        return None
+    def _download_thread(self, download_id: str, appid: str, download_dir: str,
+                        username: Optional[str], password: Optional[str],
+                        guard_code: Optional[str], game_name: str):
+        """Handle the download process in a separate thread."""
+        try:
+            success, message = self.steam_cmd.download_game(
+                appid, download_dir, username, password, guard_code
+            )
+            
+            if success:
+                self.active_downloads[download_id]["status"] = "Completed"
+                self.active_downloads[download_id]["progress"] = 100
+            else:
+                self.active_downloads[download_id]["status"] = "Failed"
+                self.active_downloads[download_id]["error"] = message
+            
+            # Add to history
+            self.download_history.append({
+                "id": download_id,
+                "name": game_name,
+                "status": "Completed" if success else "Failed",
+                "completed_at": datetime.now().isoformat()
+            })
+            
+            # Trim history if needed
+            if len(self.download_history) > Settings.MAX_HISTORY_SIZE:
+                self.download_history.pop(0)
+                
+        except Exception as e:
+            logger.error(f"Download thread error: {e}")
+            self.active_downloads[download_id]["status"] = "Failed"
+            self.active_downloads[download_id]["error"] = str(e)
     
     def get_status(self) -> Dict[str, Any]:
         """Get current download status."""
@@ -189,18 +289,42 @@ class DownloadManager:
             "active_downloads": [
                 {
                     "id": dl_id,
-                    "appid": info["appid"],
-                    "status": info["status"],
-                    "start_time": info["start_time"].isoformat()
+                    **info
                 }
                 for dl_id, info in self.active_downloads.items()
             ],
             "queue": self.download_queue,
             "history": self.download_history
         }
+    
+    def cancel_download(self, download_id: str) -> bool:
+        """Cancel a download."""
+        if download_id in self.active_downloads:
+            self.active_downloads[download_id]["status"] = "Cancelled"
+            return True
+        return False
+
+# Initialize FastAPI
+app = FastAPI(title=Settings.APP_NAME, version=Settings.VERSION)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Create global instances
 download_manager = DownloadManager()
+
+# API Routes
+@app.get("/api/status")
+async def get_status():
+    return download_manager.get_status()
+
+@app.get("/api/health")
+async def health_check():
+    return {"status": "healthy"}
 
 # Gradio Interface
 def create_interface():
@@ -214,6 +338,19 @@ def create_interface():
                 placeholder="Enter Steam game URL or ID"
             )
             
+            game_info = gr.JSON(label="Game Information")
+            
+            check_button = gr.Button("Check Game")
+            
+            def check_game(input_text):
+                return download_manager.game_info.get_game_info(input_text)
+            
+            check_button.click(
+                fn=check_game,
+                inputs=game_input,
+                outputs=game_info
+            )
+            
             anonymous = gr.Checkbox(
                 label="Anonymous Login (Free Games Only)",
                 value=True
@@ -225,22 +362,23 @@ def create_interface():
                     label="Steam Password",
                     type="password"
                 )
+                guard_code = gr.Textbox(label="Steam Guard Code (if needed)")
             
             download_btn = gr.Button("Download Game")
             status = gr.JSON(label="Download Status")
             
-            def start_download(game_input, anonymous, username, password):
-                result = download_manager.start_download(
+            def start_download(game_input, anonymous, username, password, guard_code):
+                return download_manager.start_download(
                     game_input,
                     anonymous,
-                    username,
-                    password
+                    username if not anonymous else None,
+                    password if not anonymous else None,
+                    guard_code if not anonymous else None
                 )
-                return json.dumps(result, indent=2)
             
             download_btn.click(
                 fn=start_download,
-                inputs=[game_input, anonymous, username, password],
+                inputs=[game_input, anonymous, username, password, guard_code],
                 outputs=status
             )
         
@@ -249,23 +387,20 @@ def create_interface():
             refresh_btn = gr.Button("Refresh Status")
             
             def update_status():
-                return json.dumps(download_manager.get_status(), indent=2)
+                return download_manager.get_status()
             
             refresh_btn.click(
                 fn=update_status,
                 outputs=status_output
             )
+            
+            # Auto-refresh every 5 seconds
+            gr.update(every=5)(
+                fn=update_status,
+                outputs=status_output
+            )
     
     return interface
-
-# API Routes
-@app.get("/api/status")
-async def get_status():
-    return download_manager.get_status()
-
-@app.get("/api/health")
-async def health_check():
-    return {"status": "healthy"}
 
 def main():
     """Main application entry point."""
