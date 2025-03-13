@@ -6,22 +6,20 @@ import logging
 import uvicorn
 import threading
 from pathlib import Path
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 
-# Add the app directory to the Python path
+# Add the parent directory to the Python path
 sys.path.append(str(Path(__file__).parent))
 
 # Import application components
-from app.core.config import settings
-from app.core.logging import setup_logging
-from app.core.exceptions import SteamDownloaderError
-from app.api.routes import router as api_router
-from app.ui.interface import create_interface
-from app.services.steam_cmd import steam_cmd
-from app.services.downloader import download_manager
+from app.core import settings, setup_logging, SteamDownloaderError
+from app.api import router as api_router
+from app.ui import create_interface
+from app.services import steam_cmd, download_manager
 
 # Initialize FastAPI application
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
 fastapi_app = FastAPI(
     title=settings.APP_NAME,
     version=settings.VERSION,
