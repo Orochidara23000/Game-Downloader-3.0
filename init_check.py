@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
-"""
-Diagnostic script to check environment before starting the main application.
-"""
-
 import os
 import sys
 import platform
+import logging
 import psutil
 import requests
 from pathlib import Path
-from log_config import setup_logging
 
-# Set up logging
-logger = setup_logging(name="init_check")
+# Set up basic logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    stream=sys.stdout
+)
+
+logger = logging.getLogger(__name__)
 
 def check_python_version():
     """Check if Python version is compatible."""
@@ -87,6 +89,8 @@ def check_permissions():
 
 def main():
     """Run all initialization checks."""
+    logger.info("Starting initialization checks...")
+    
     checks = [
         ("Python version", check_python_version),
         ("System resources", check_system_resources),

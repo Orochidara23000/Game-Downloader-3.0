@@ -21,6 +21,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY *.py .
 COPY entrypoint.sh .
 
+# Ensure no conflicting files exist
+RUN rm -f logging.py
+
 # Create necessary directories
 RUN mkdir -p /data/downloads /app/steamcmd /app/logs
 

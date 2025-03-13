@@ -3,6 +3,9 @@ set -euo pipefail
 
 echo "Starting Steam Downloader..."
 
+# Remove any conflicting logging.py if it exists
+rm -f /app/logging.py
+
 # Create and set permissions for directories
 mkdir -p /data/downloads /app/steamcmd /app/logs
 chmod 755 /data/downloads /app/steamcmd /app/logs
