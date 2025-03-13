@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import Optional, Dict, Any
 import requests
-from ..core.config import settings
+from config import settings
 from ..core.exceptions import GameNotFoundError, NetworkError
 
 logger = logging.getLogger(__name__)

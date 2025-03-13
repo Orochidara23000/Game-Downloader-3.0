@@ -4,9 +4,8 @@ import time
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 from datetime import datetime
-from ..core.config import settings
-from ..core.exceptions import DownloadError
-from .steam_cmd import steam_cmd
+from config import settings
+from steam_cmd import steam_cmd
 
 logger = logging.getLogger(__name__)
 

@@ -1,7 +1,7 @@
 import gradio as gr
 from typing import Tuple, List, Dict, Any
-from ..services.game_info import game_info_service
-from ..services.downloader import download_manager
+from game_info import game_info_service
+from downloader import download_manager
 from ..core.exceptions import SteamDownloaderError
 
 def create_game_info_component() -> Tuple[gr.components.Component, ...]:

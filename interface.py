@@ -1,10 +1,10 @@
 import gradio as gr
-from .components import (
+from components import (
     create_game_info_component,
     create_download_form,
     create_downloads_tab
 )
-from ..core.config import settings
+from config import settings
 
 def create_interface() -> gr.Blocks:
     """Create the main Gradio interface."""

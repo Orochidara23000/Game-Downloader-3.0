@@ -16,7 +16,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application files
-COPY . .
+COPY *.py .
+COPY entrypoint.sh .
 
 # Create necessary directories
 RUN mkdir -p /data/downloads /app/steamcmd /app/logs /app/cache
@@ -27,7 +28,7 @@ ENV LOG_LEVEL=INFO
 ENV PORT=7860
 
 # Make the application files executable
-RUN chmod +x main.py
+RUN chmod +x main.py entrypoint.sh
 
 # Run the application
-CMD ["python", "main.py"]
+CMD ["./entrypoint.sh"]

@@ -7,7 +7,7 @@ import zipfile
 import logging
 from pathlib import Path
 from typing import Tuple, Optional
-from ..core.config import settings
+from config import settings
 from ..core.exceptions import SteamCMDError
 
 logger = logging.getLogger(__name__)
