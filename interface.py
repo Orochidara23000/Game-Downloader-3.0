@@ -1,98 +1,87 @@
 import gradio as gr
-from components import (
-    create_game_info_component,
-    create_download_form,
-    create_downloads_tab
-)
-from config import settings
+from typing import Dict, Optional
+from models import DownloadRequest, GameInfo
+from downloader import download_manager
+from steam_handler import steam_cmd
+from utils import is_valid_game_id, extract_game_id
 
 def create_interface() -> gr.Blocks:
-    """Create the main Gradio interface."""
-    with gr.Blocks(title=settings.APP_NAME) as app:
-        gr.Markdown(f"# {settings.APP_NAME}")
+    """Create the Gradio interface."""
+    with gr.Blocks(title="Steam Games Downloader") as interface:
+        gr.Markdown("# Steam Games Downloader")
         
         with gr.Tabs():
             with gr.Tab("Download Games"):
-                # Game info section
-                game_input, game_info, game_preview = create_game_info_component()
+                with gr.Row():
+                    game_input = gr.Textbox(label="Game ID or Steam Store URL")
+                    anonymous_login = gr.Checkbox(label="Anonymous Login", value=True)
                 
-                # Download form
-                (anonymous_login, username, password, guard_code,
-                 validate, download_button, download_status) = create_download_form()
-                
-                def handle_download(
-                    game_input: str,
-                    anonymous: bool,
-                    username: str,
-                    password: str,
-                    guard_code: str,
-                    validate: bool,
-                    game_info: dict
-                ) -> str:
-                    if not game_info:
-                        return "❌ Please check game information first"
-                    
-                    if not anonymous and (not username or not password):
-                        return "❌ Username and password required for non-anonymous downloads"
-                    
-                    try:
-                        download_id = download_manager.start_download(
-                            appid=game_info["steam_appid"],
-                            name=game_info["name"],
-                            username=None if anonymous else username,
-                            password=None if anonymous else password,
-                            guard_code=guard_code,
-                            validate=validate
-                        )
-                        
-                        return f"✅ Download started with ID: {download_id}"
-                    except Exception as e:
-                        return f"❌ Error: {str(e)}"
-                
-                download_button.click(
-                    fn=handle_download,
-                    inputs=[
-                        game_input,
-                        anonymous_login,
-                        username,
-                        password,
-                        guard_code,
-                        validate,
-                        game_info
-                    ],
-                    outputs=download_status
-                )
-            
-            # Downloads status tab
-            create_downloads_tab()
-            
-            with gr.Tab("Settings"):
-                gr.Markdown("## Application Settings")
+                with gr.Group(visible=False) as login_group:
+                    username = gr.Textbox(label="Steam Username")
+                    password = gr.Textbox(label="Steam Password", type="password")
+                    steam_guard = gr.Textbox(label="Steam Guard Code (if required)")
                 
                 with gr.Row():
-                    with gr.Column():
-                        download_path = gr.Textbox(
-                            label="Download Path",
-                            value=settings.STEAM_DOWNLOAD_PATH,
-                            interactive=False
-                        )
-                        max_downloads = gr.Slider(
-                            label="Maximum Concurrent Downloads",
-                            minimum=1,
-                            maximum=5,
-                            value=settings.MAX_CONCURRENT_DOWNLOADS,
-                            step=1
-                        )
-                    
-                    with gr.Column():
-                        log_level = gr.Dropdown(
-                            label="Log Level",
-                            choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-                            value=settings.LOG_LEVEL
-                        )
-                        keep_history = gr.Checkbox(
-                            label="Keep Download History",
-                            value=True
-                        )
-    
-    return app 
+                    download_btn = gr.Button("Download Now")
+                    queue_btn = gr.Button("Add to Queue")
+                
+                progress = gr.Progress(label="Download Progress")
+                status = gr.JSON(label="Download Status")
+            
+            with gr.Tab("Library"):
+                refresh_btn = gr.Button("Refresh Library")
+                library = gr.JSON(label="Installed Games")
+            
+            with gr.Tab("Settings"):
+                download_path = gr.Textbox(label="Download Path")
+                clear_cache = gr.Button("Clear Cache")
+                check_steam = gr.Button("Check SteamCMD Installation")
+
+        # Event handlers
+        def toggle_login(anonymous: bool) -> Dict:
+            return {"visible": not anonymous}
+        
+        def validate_input(input_text: str) -> str:
+            if is_valid_game_id(input_text):
+                return ""
+            game_id = extract_game_id(input_text)
+            if game_id:
+                return ""
+            return "Invalid game ID or Steam store URL"
+
+        def start_download(
+            input_text: str,
+            anonymous: bool,
+            username: Optional[str],
+            password: Optional[str],
+            steam_guard: Optional[str]
+        ):
+            game_id = extract_game_id(input_text) if not is_valid_game_id(input_text) else int(input_text)
+            
+            request = DownloadRequest(
+                app_id=game_id,
+                anonymous=anonymous,
+                username=username if not anonymous else None,
+                password=password if not anonymous else None,
+                steam_guard_code=steam_guard if not anonymous else None
+            )
+            
+            game_info = GameInfo(app_id=game_id, name=f"Game {game_id}")
+            download_manager.add_to_queue(game_info, None if anonymous else {
+                "username": username,
+                "password": password,
+                "steam_guard_code": steam_guard
+            })
+            
+            return "Download started"
+
+        # Connect events
+        anonymous_login.change(toggle_login, anonymous_login, login_group)
+        game_input.change(validate_input, game_input, game_input)
+        download_btn.click(
+            start_download,
+            [game_input, anonymous_login, username, password, steam_guard],
+            status
+        )
+
+    return interface 

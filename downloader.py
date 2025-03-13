@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from config import settings
 from steam_cmd import steam_cmd
+import os
+from queue import Queue
+from models import DownloadStatus, DownloadProgress, GameInfo
+from utils import format_size, format_speed, format_time
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +32,10 @@ class DownloadManager:
         self.download_queue: List[Dict] = []
         self.download_history: List[Dict] = []
         self.lock = threading.Lock()
+        self.download_queue = Queue()
+        self.active_downloads: Dict[int, DownloadProgress] = {}
+        self.download_thread = None
+        self.running = False
         
         # Start queue processor
         self.queue_processor = threading.Thread(
@@ -36,164 +44,113 @@ class DownloadManager:
         )
         self.queue_processor.start()
     
-    def start_download(
-        self,
-        appid: str,
-        name: str,
-        username: Optional[str] = None,
-        password: Optional[str] = None,
-        guard_code: Optional[str] = None,
-        validate: bool = True
-    ) -> str:
-        """
-        Start or queue a new download.
-        
-        Returns:
-            Download ID
-        """
-        download_id = f"dl_{int(time.time())}_{appid}"
-        
-        download_info = {
-            "id": download_id,
-            "appid": appid,
-            "name": name,
-            "username": username,
-            "password": password,
-            "guard_code": guard_code,
-            "validate": validate
-        }
-        
-        with self.lock:
-            if len(self.active_downloads) >= settings.MAX_CONCURRENT_DOWNLOADS:
-                self.download_queue.append(download_info)
-                logger.info("Download queued: %s", name)
-                return download_id
-            
-            self._start_download_thread(download_info)
-            return download_id
+    def start(self):
+        """Start the download manager."""
+        if not self.running:
+            self.running = True
+            self.download_thread = threading.Thread(target=self._process_queue)
+            self.download_thread.daemon = True
+            self.download_thread.start()
     
-    def _start_download_thread(self, download_info: Dict) -> None:
-        """Start a new download thread."""
-        status = DownloadStatus(
-            id=download_info["id"],
-            appid=download_info["appid"],
-            name=download_info["name"],
-            progress=0.0,
-            status="Starting",
-            start_time=datetime.now()
-        )
-        
-        self.active_downloads[download_info["id"]] = status
-        
-        thread = threading.Thread(
-            target=self._download_worker,
-            args=(download_info,),
-            daemon=True
-        )
-        thread.start()
+    def stop(self):
+        """Stop the download manager."""
+        self.running = False
+        if self.download_thread:
+            self.download_thread.join()
     
-    def _download_worker(self, download_info: Dict) -> None:
-        """Worker function for download thread."""
-        try:
-            success, message = steam_cmd.download_game(
-                appid=download_info["appid"],
-                username=download_info["username"],
-                password=download_info["password"],
-                guard_code=download_info["guard_code"],
-                validate=download_info["validate"]
-            )
-            
-            with self.lock:
-                if success:
-                    self.active_downloads[download_info["id"]].status = "Completed"
-                    self.active_downloads[download_info["id"]].progress = 100.0
-                else:
-                    self.active_downloads[download_info["id"]].status = "Failed"
-                    self.active_downloads[download_info["id"]].error = message
-                
-                # Add to history
-                self._add_to_history(download_info["id"])
-                
-        except Exception as e:
-            logger.error("Download error: %s", str(e))
-            with self.lock:
-                self.active_downloads[download_info["id"]].status = "Failed"
-                self.active_downloads[download_info["id"]].error = str(e)
-                self._add_to_history(download_info["id"])
+    def add_to_queue(self, game_info: GameInfo, credentials: Optional[Dict] = None):
+        """Add a game to the download queue."""
+        self.download_queue.put((game_info, credentials))
+        logger.info(f"Added game {game_info.app_id} to download queue")
     
-    def _process_queue(self) -> None:
+    def _process_queue(self):
         """Process the download queue."""
+        while self.running:
+            try:
+                if not self.download_queue.empty():
+                    game_info, credentials = self.download_queue.get()
+                    self._handle_download(game_info, credentials)
+                time.sleep(1)
+            except Exception as e:
+                logger.error(f"Error processing download queue: {e}")
+    
+    def _handle_download(self, game_info: GameInfo, credentials: Optional[Dict]):
+        """Handle the download of a single game."""
+        try:
+            # Login to Steam
+            if credentials:
+                steam_cmd.login(**credentials)
+            else:
+                steam_cmd.login()
+
+            # Prepare download directory
+            install_dir = settings.DOWNLOAD_DIR / str(game_info.app_id)
+            install_dir.mkdir(parents=True, exist_ok=True)
+
+            # Start download
+            if steam_cmd.download_game(game_info.app_id, install_dir):
+                self._monitor_download(game_info.app_id)
+            else:
+                logger.error(f"Failed to start download for game {game_info.app_id}")
+
+        except Exception as e:
+            logger.error(f"Error downloading game {game_info.app_id}: {e}")
+            self.active_downloads[game_info.app_id] = DownloadProgress(
+                status=DownloadStatus.FAILED,
+                progress=0,
+                speed="0 B/s",
+                eta="Unknown",
+                current_file="",
+                total_size="Unknown"
+            )
+    
+    def _monitor_download(self, app_id: int):
+        """Monitor download progress for a game."""
         while True:
-            time.sleep(5)  # Check every 5 seconds
+            progress, message = steam_cmd.get_download_progress()
             
-            with self.lock:
-                # Remove completed downloads
-                self._cleanup_completed()
-                
-                # Start new downloads if possible
-                while (len(self.active_downloads) < settings.MAX_CONCURRENT_DOWNLOADS
-                       and self.download_queue):
-                    next_download = self.download_queue.pop(0)
-                    self._start_download_thread(next_download)
-    
-    def _cleanup_completed(self) -> None:
-        """Remove completed downloads that are older than 1 minute."""
-        current_time = datetime.now()
-        completed_ids = [
-            dl_id for dl_id, status in self.active_downloads.items()
-            if status.status in ["Completed", "Failed"]
-            and (current_time - status.start_time).total_seconds() > 60
-        ]
-        
-        for dl_id in completed_ids:
-            self._add_to_history(dl_id)
-            del self.active_downloads[dl_id]
-    
-    def _add_to_history(self, download_id: str) -> None:
-        """Add a download to history."""
-        status = self.active_downloads[download_id]
-        history_entry = {
-            "id": status.id,
-            "appid": status.appid,
-            "name": status.name,
-            "status": status.status,
-            "error": status.error,
-            "completed_at": datetime.now().isoformat()
-        }
-        
-        self.download_history.append(history_entry)
-        
-        # Trim history if needed
-        if len(self.download_history) > settings.MAX_HISTORY_SIZE:
-            self.download_history.pop(0)
+            self.active_downloads[app_id] = DownloadProgress(
+                status=DownloadStatus.DOWNLOADING if progress < 100 else DownloadStatus.COMPLETED,
+                progress=progress,
+                speed=self._extract_speed(message),
+                eta=self._extract_eta(message),
+                current_file=self._extract_filename(message),
+                total_size=self._extract_size(message)
+            )
+
+            if progress >= 100 or "Failed" in message:
+                break
+            time.sleep(1)
     
     def get_status(self) -> Dict:
         """Get current download status."""
-        with self.lock:
-            return {
-                "active": [vars(status) for status in self.active_downloads.values()],
-                "queue": [
-                    {"name": d["name"], "appid": d["appid"]}
-                    for d in self.download_queue
-                ],
-                "history": self.download_history
-            }
+        return {
+            "queue_size": self.download_queue.qsize(),
+            "active_downloads": self.active_downloads
+        }
     
-    def cancel_download(self, download_id: str) -> bool:
-        """Cancel a download."""
-        with self.lock:
-            if download_id in self.active_downloads:
-                self.active_downloads[download_id].status = "Cancelled"
-                self._add_to_history(download_id)
-                return True
-            
-            # Check queue
-            for i, download in enumerate(self.download_queue):
-                if download["id"] == download_id:
-                    self.download_queue.pop(i)
-                    return True
-            
-            return False
+    def cancel_download(self, app_id: int):
+        """Cancel a specific download."""
+        steam_cmd.cancel_download()
+        if app_id in self.active_downloads:
+            self.active_downloads[app_id].status = DownloadStatus.CANCELLED
+    
+    # Helper methods for parsing SteamCMD output
+    def _extract_speed(self, message: str) -> str:
+        # Implementation for extracting speed from message
+        return "0 B/s"  # Placeholder
+    
+    def _extract_eta(self, message: str) -> str:
+        # Implementation for extracting ETA from message
+        return "Unknown"  # Placeholder
+    
+    def _extract_filename(self, message: str) -> str:
+        # Implementation for extracting filename from message
+        return ""  # Placeholder
+    
+    def _extract_size(self, message: str) -> str:
+        # Implementation for extracting size from message
+        return "Unknown"  # Placeholder
 
 # Create global instance
 download_manager = DownloadManager() 

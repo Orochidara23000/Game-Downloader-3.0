@@ -1,6 +1,6 @@
 from pathlib import Path
 import os
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 try:
     from pydantic_settings import BaseSettings
@@ -10,25 +10,21 @@ except ImportError:
 class Settings(BaseSettings):
     # Application Settings
     APP_NAME: str = "Steam Games Downloader"
-    VERSION: str = "2.0.0"
+    VERSION: str = "1.0.0"
     DEBUG: bool = False
     
     # Paths
-    BASE_DIR: Path = Path(__file__).resolve().parent.parent.parent
-    STEAM_DOWNLOAD_PATH: str = os.environ.get(
-        'STEAM_DOWNLOAD_PATH', 
-        str(BASE_DIR / "downloads")
-    )
-    LOG_DIR: Path = BASE_DIR / "logs"
+    BASE_DIR: Path = Path.cwd()
     STEAMCMD_DIR: Path = BASE_DIR / "steamcmd"
-    CACHE_DIR: Path = BASE_DIR / "cache"
+    LOG_DIR: Path = BASE_DIR / "logs"
+    DOWNLOAD_DIR: Path = Path(os.environ.get("STEAM_DOWNLOAD_PATH", BASE_DIR / "downloads"))
     
     # Server Settings
     HOST: str = "0.0.0.0"
     PORT: int = 7860
     
     # Logging
-    LOG_LEVEL: str = os.environ.get('LOG_LEVEL', 'INFO')
+    LOG_LEVEL: str = "INFO"
     
     # Download Settings
     MAX_CONCURRENT_DOWNLOADS: int = 1
@@ -38,20 +34,17 @@ class Settings(BaseSettings):
     # Steam API
     STEAM_API_URL: str = "https://store.steampowered.com/api"
     
+    # Steam settings
+    STEAM_GUARD_REQUIRED: bool = False
+    STEAM_USERNAME: Optional[str] = None
+    
     class Config:
         env_file = ".env"
         
     def create_directories(self) -> None:
         """Create necessary directories if they don't exist."""
-        directories = [
-            self.STEAM_DOWNLOAD_PATH,
-            self.LOG_DIR,
-            self.STEAMCMD_DIR,
-            self.CACHE_DIR
-        ]
-        
-        for directory in directories:
-            Path(directory).mkdir(parents=True, exist_ok=True)
+        for directory in [self.STEAMCMD_DIR, self.LOG_DIR, self.DOWNLOAD_DIR]:
+            directory.mkdir(parents=True, exist_ok=True)
             
     def get_steamcmd_path(self) -> Path:
         """Get the path to SteamCMD executable based on platform."""

@@ -6,6 +6,8 @@ RUN apt-get update && \
     lib32gcc-s1 \
     curl \
     libcurl4 \
+    python3-dev \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
@@ -20,15 +22,19 @@ COPY *.py .
 COPY entrypoint.sh .
 
 # Create necessary directories
-RUN mkdir -p /data/downloads /app/steamcmd /app/logs /app/cache
+RUN mkdir -p /data/downloads /app/steamcmd /app/logs
 
 # Set environment variables
-ENV STEAM_DOWNLOAD_PATH=/data/downloads
-ENV LOG_LEVEL=INFO
-ENV PORT=7860
+ENV STEAM_DOWNLOAD_PATH=/data/downloads \
+    LOG_LEVEL=INFO \
+    PORT=7860 \
+    HOST=0.0.0.0
 
-# Make the application files executable
-RUN chmod +x main.py entrypoint.sh
+# Make the entrypoint script executable
+RUN chmod +x entrypoint.sh
 
-# Run the application
-CMD ["./entrypoint.sh"]
+# Expose port
+EXPOSE 7860
+
+# Set entrypoint
+ENTRYPOINT ["./entrypoint.sh"]

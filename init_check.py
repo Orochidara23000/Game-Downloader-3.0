@@ -7,6 +7,9 @@ import os
 import sys
 import platform
 import logging
+import psutil
+import requests
+from pathlib import Path
 
 # Set up logging
 logging.basicConfig(
@@ -15,111 +18,97 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 
-def check_directories():
-    """Check if required directories exist and have proper permissions."""
-    directories = [
-        ('/app', 'Application directory'),
-        ('/app/steamcmd', 'SteamCMD directory'),
-        (os.environ.get('STEAM_DOWNLOAD_PATH', '/data/downloads'), 'Download directory'),
-        ('/app/logs', 'Logs directory')
+def check_python_version():
+    """Check if Python version is compatible."""
+    required_version = (3, 9)
+    current_version = sys.version_info[:2]
+    
+    if current_version < required_version:
+        logging.error(f"Python {required_version[0]}.{required_version[1]} or higher is required")
+        return False
+        
+    logging.info(f"Python version {platform.python_version()} OK")
+    return True
+
+def check_system_resources():
+    """Check if system has sufficient resources."""
+    min_memory_gb = 2
+    min_disk_gb = 10
+    
+    memory_gb = psutil.virtual_memory().total / (1024**3)
+    disk_gb = psutil.disk_usage('/').free / (1024**3)
+    
+    if memory_gb < min_memory_gb:
+        logging.error(f"Insufficient memory: {memory_gb:.1f}GB (minimum {min_memory_gb}GB required)")
+        return False
+        
+    if disk_gb < min_disk_gb:
+        logging.error(f"Insufficient disk space: {disk_gb:.1f}GB (minimum {min_disk_gb}GB required)")
+        return False
+    
+    logging.info(f"System resources OK (Memory: {memory_gb:.1f}GB, Free disk space: {disk_gb:.1f}GB)")
+    return True
+
+def check_internet_connection():
+    """Check internet connectivity."""
+    test_urls = [
+        "https://store.steampowered.com",
+        "https://steamcdn-a.akamaihd.net"
     ]
-
-    for directory, description in directories:
-        logging.info(f"Checking {description}: {directory}")
-        if not os.path.exists(directory):
-            try:
-                os.makedirs(directory, exist_ok=True)
-                logging.info(f"Created {directory}")
-            except Exception as e:
-                logging.error(f"Failed to create {directory}: {str(e)}")
-                return False
-
-        # Check permissions
+    
+    for url in test_urls:
         try:
-            test_file = os.path.join(directory, '.permission_test')
-            with open(test_file, 'w') as f:
-                f.write('test')
-            os.remove(test_file)
-            logging.info(f"{description} is writable")
+            response = requests.get(url, timeout=5)
+            response.raise_for_status()
         except Exception as e:
-            logging.error(f"{description} is not writable: {str(e)}")
+            logging.error(f"Failed to connect to {url}: {str(e)}")
             return False
-
+    
+    logging.info("Internet connectivity OK")
     return True
 
-def check_environment_variables():
-    """Check if required environment variables are set."""
-    required_vars = ['STEAM_DOWNLOAD_PATH']
-    missing_vars = [var for var in required_vars if not os.environ.get(var)]
-
-    if missing_vars:
-        logging.error(f"Missing environment variables: {', '.join(missing_vars)}")
-        return False
-
-    logging.info("Environment variables are set.")
-    return True
-
-def check_dependencies():
-    """Check if required system libraries are installed."""
-    dependencies = [
-        ('/lib/x86_64-linux-gnu/libstdc++.so.6', 'lib32gcc-s1'),
-        ('/usr/lib/x86_64-linux-gnu/libcurl.so.4', 'libcurl4'),
+def check_permissions():
+    """Check if the application has necessary permissions."""
+    paths_to_check = [
+        Path.cwd(),
+        Path.cwd() / "downloads",
+        Path.cwd() / "logs",
+        Path.cwd() / "steamcmd"
     ]
-
-    missing_deps = [f"{package} ({path})" for path, package in dependencies if not os.path.exists(path)]
-
-    if missing_deps:
-        logging.error(f"Missing system dependencies: {', '.join(missing_deps)}")
-        return False
-
-    logging.info("All required system dependencies are installed.")
+    
+    for path in paths_to_check:
+        try:
+            path.mkdir(exist_ok=True)
+            test_file = path / ".permission_test"
+            test_file.touch()
+            test_file.unlink()
+        except Exception as e:
+            logging.error(f"Permission error for {path}: {str(e)}")
+            return False
+    
+    logging.info("File system permissions OK")
     return True
-
-def check_python_modules():
-    """Check if required Python modules are installed."""
-    required_modules = ['gradio', 'requests', 'psutil', 'bs4', 'lxml']
-    missing_modules = [module for module in required_modules if not _is_module_installed(module)]
-
-    if missing_modules:
-        logging.error(f"Missing Python modules: {', '.join(missing_modules)}")
-        return False
-
-    logging.info("All required Python modules are installed.")
-    return True
-
-def _is_module_installed(module_name):
-    """Check if a Python module is installed."""
-    try:
-        __import__(module_name)
-        return True
-    except ImportError:
-        return False
 
 def main():
-    """Run all checks and report status."""
-    logging.info(f"Running initialization checks on {platform.platform()}")
-    
+    """Run all initialization checks."""
     checks = [
-        ("Environment variables", check_environment_variables()),
-        ("Directories", check_directories()),
-        ("System dependencies", check_dependencies()),
-        ("Python modules", check_python_modules())
+        ("Python version", check_python_version),
+        ("System resources", check_system_resources),
+        ("Internet connection", check_internet_connection),
+        ("File permissions", check_permissions)
     ]
-
-    all_passed = all(result for _, result in checks)
     
-    logging.info("Check results:")
+    results = []
+    for check_name, check_func in checks:
+        logging.info(f"\nRunning {check_name} check...")
+        results.append(check_func())
     
-    for check_name, result in checks:
-        status = "✅ PASSED" if result else "❌ FAILED"
-        logging.info(f"{check_name}: {status}")
-
-    if all_passed:
-        logging.info("All checks passed! The application should start correctly.")
+    if all(results):
+        logging.info("\nAll checks passed successfully!")
         return 0
-    
-    logging.error("Some checks failed. Please fix the issues before starting the application.")
-    return 1
+    else:
+        logging.error("\nOne or more checks failed. Please fix the issues before running the application.")
+        return 1
 
 if __name__ == "__main__":
     sys.exit(main())
