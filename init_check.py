@@ -6,17 +6,13 @@ Diagnostic script to check environment before starting the main application.
 import os
 import sys
 import platform
-import logging
 import psutil
 import requests
 from pathlib import Path
+from log_config import setup_logging
 
 # Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
+logger = setup_logging(name="init_check")
 
 def check_python_version():
     """Check if Python version is compatible."""
@@ -24,10 +20,10 @@ def check_python_version():
     current_version = sys.version_info[:2]
     
     if current_version < required_version:
-        logging.error(f"Python {required_version[0]}.{required_version[1]} or higher is required")
+        logger.error(f"Python {required_version[0]}.{required_version[1]} or higher is required")
         return False
         
-    logging.info(f"Python version {platform.python_version()} OK")
+    logger.info(f"Python version {platform.python_version()} OK")
     return True
 
 def check_system_resources():
@@ -39,14 +35,14 @@ def check_system_resources():
     disk_gb = psutil.disk_usage('/').free / (1024**3)
     
     if memory_gb < min_memory_gb:
-        logging.error(f"Insufficient memory: {memory_gb:.1f}GB (minimum {min_memory_gb}GB required)")
+        logger.error(f"Insufficient memory: {memory_gb:.1f}GB (minimum {min_memory_gb}GB required)")
         return False
         
     if disk_gb < min_disk_gb:
-        logging.error(f"Insufficient disk space: {disk_gb:.1f}GB (minimum {min_disk_gb}GB required)")
+        logger.error(f"Insufficient disk space: {disk_gb:.1f}GB (minimum {min_disk_gb}GB required)")
         return False
     
-    logging.info(f"System resources OK (Memory: {memory_gb:.1f}GB, Free disk space: {disk_gb:.1f}GB)")
+    logger.info(f"System resources OK (Memory: {memory_gb:.1f}GB, Free disk space: {disk_gb:.1f}GB)")
     return True
 
 def check_internet_connection():
@@ -61,10 +57,10 @@ def check_internet_connection():
             response = requests.get(url, timeout=5)
             response.raise_for_status()
         except Exception as e:
-            logging.error(f"Failed to connect to {url}: {str(e)}")
+            logger.error(f"Failed to connect to {url}: {str(e)}")
             return False
     
-    logging.info("Internet connectivity OK")
+    logger.info("Internet connectivity OK")
     return True
 
 def check_permissions():
@@ -83,10 +79,10 @@ def check_permissions():
             test_file.touch()
             test_file.unlink()
         except Exception as e:
-            logging.error(f"Permission error for {path}: {str(e)}")
+            logger.error(f"Permission error for {path}: {str(e)}")
             return False
     
-    logging.info("File system permissions OK")
+    logger.info("File system permissions OK")
     return True
 
 def main():
@@ -100,14 +96,14 @@ def main():
     
     results = []
     for check_name, check_func in checks:
-        logging.info(f"\nRunning {check_name} check...")
+        logger.info(f"\nRunning {check_name} check...")
         results.append(check_func())
     
     if all(results):
-        logging.info("\nAll checks passed successfully!")
+        logger.info("\nAll checks passed successfully!")
         return 0
     else:
-        logging.error("\nOne or more checks failed. Please fix the issues before running the application.")
+        logger.error("\nOne or more checks failed. Please fix the issues before running the application.")
         return 1
 
 if __name__ == "__main__":

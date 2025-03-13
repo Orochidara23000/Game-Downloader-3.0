@@ -2,9 +2,8 @@
 import os
 import sys
 import signal
-import logging
-import uvicorn
 import threading
+import uvicorn
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,18 +15,13 @@ from downloader import download_manager
 from steam_handler import steam_cmd
 from models import SystemStatus
 from utils import get_system_metrics
+from log_config import setup_logging
 
 # Set up logging
-logging.basicConfig(
-    level=settings.LOG_LEVEL,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(settings.LOG_DIR / "steam_downloader.log"),
-        logging.StreamHandler(sys.stdout)
-    ]
+logger = setup_logging(
+    name="steam_downloader",
+    log_file=settings.LOG_DIR / "steam_downloader.log"
 )
-
-logger = logging.getLogger(__name__)
 
 # Initialize FastAPI
 app = FastAPI(title=settings.APP_NAME, version=settings.VERSION)
